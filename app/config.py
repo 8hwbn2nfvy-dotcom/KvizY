@@ -59,7 +59,9 @@ class Settings:
 
     # База: пусто = локальный файл SQLite; адрес YDB (grpcs://...?database=...) = YDB;
     # sqlite:///... или postgresql+psycopg://... — тоже можно.
-    database_url: str = field(default_factory=lambda: _env("DATABASE_URL"))
+    # Вместо DATABASE_URL можно задать YDB_ENDPOINT (grpcs://ydb.serverless.yandexcloud.net:2135) и YDB_DATABASE (/ru-central1/...).
+    database_url: str = field(default_factory=lambda: _env("DATABASE_URL") or (
+        f"{_env('YDB_ENDPOINT').rstrip('/')}/?database={_env('YDB_DATABASE')}" if _env("YDB_ENDPOINT") else ""))
 
     monthly_budget: float = field(default_factory=lambda: _float("MONTHLY_BUDGET_RUB", 500))
 

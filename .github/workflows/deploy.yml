@@ -1,0 +1,114 @@
+# При каждом пуше в main: тесты → сборка образа → Yandex Container Registry → новая ревизия контейнера.
+# Нужные секреты (Settings → Secrets and variables → Actions) описаны в docs/yandex_cloud.md.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/kvizy:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверить, что секреты заданы
+        id: check
+        env:
+          A: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          B: ${{ secrets.YC_FOLDER_ID }}
+          C: ${{ secrets.YC_REGISTRY_ID }}
+          D: ${{ secrets.YC_SA_ID }}
+          E: ${{ secrets.KVIZY_PASSWORD }}
+          F: ${{ secrets.SESSION_SECRET }}
+          G: ${{ secrets.KEY_SECRET }}
+          H: ${{ secrets.YDB_ENDPOINT }}
+          I: ${{ secrets.YDB_DATABASE }}
+        run: |
+          missing=""
+          for v in "A:YC_SA_JSON_CREDENTIALS" "B:YC_FOLDER_ID" "C:YC_REGISTRY_ID" "D:YC_SA_ID" "E:KVIZY_PASSWORD" "F:SESSION_SECRET" "G:KEY_SECRET" "H:YDB_ENDPOINT" "I:YDB_DATABASE"; do
+            var="${v%%:*}"
+            [ -z "${!var}" ] && missing="$missing ${v#*:}"
+          done
+          if [ -z "$A" ]; then
+            echo "::warning::Деплой пропущен: Yandex Cloud ещё не настроен (нет секрета YC_SA_JSON_CREDENTIALS). См. docs/yandex_cloud.md"
+            echo "skip=1" >> $GITHUB_OUTPUT; exit 0
+          fi
+          if [ -n "$missing" ]; then echo "::error::Не заданы секреты:$missing (см. docs/yandex_cloud.md)"; exit 1; fi
+
+      - name: Установить yc
+        if: steps.check.outputs.skip != '1'
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n
+          echo "/opt/yc/bin" >> $GITHUB_PATH
+
+      - name: Войти в Yandex Cloud
+        if: steps.check.outputs.skip != '1'
+        env:
+          KEY: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+        run: |
+          echo "$KEY" > key.json
+          yc config set service-account-key key.json
+          yc config set folder-id "${{ secrets.YC_FOLDER_ID }}"
+          echo "$KEY" | docker login --username json_key --password-stdin cr.yandex
+
+      - name: Собрать и загрузить образ
+        if: steps.check.outputs.skip != '1'
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Новая ревизия контейнера
+        if: steps.check.outputs.skip != '1'
+        env:
+          KVIZY_PASSWORD: ${{ secrets.KVIZY_PASSWORD }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          KEY_SECRET: ${{ secrets.KEY_SECRET }}
+          YDB_ENDPOINT: ${{ secrets.YDB_ENDPOINT }}
+          YDB_DATABASE: ${{ secrets.YDB_DATABASE }}
+          YANDEX_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          yc serverless container get --name kvizy >/dev/null 2>&1 || yc serverless container create --name kvizy
+          yc serverless container allow-unauthenticated-invoke --name kvizy
+          yc serverless container revision deploy \
+            --container-name kvizy \
+            --image "$IMAGE" \
+            --cores 1 --core-fraction 100 --memory 1GB \
+            --concurrency 4 \
+            --execution-timeout 600s \
+            --service-account-id "${{ secrets.YC_SA_ID }}" \
+            --environment "KVIZY_PASSWORD=$KVIZY_PASSWORD,SESSION_SECRET=$SESSION_SECRET,KEY_SECRET=$KEY_SECRET,YDB_ENDPOINT=$YDB_ENDPOINT,YDB_DATABASE=$YDB_DATABASE,YANDEX_FOLDER_ID=$YANDEX_FOLDER_ID,AI_PROVIDER=yandex,MONTHLY_BUDGET_RUB=500"
+          echo "Адрес приложения:"
+          yc serverless container get --name kvizy --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])"
+
+      - name: Проверить /api/health
+        if: steps.check.outputs.skip != '1'
+        run: |
+          URL=$(yc serverless container get --name kvizy --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])")
+          for i in 1 2 3 4 5 6; do
+            if curl -sf "${URL%/}/api/health"; then echo; exit 0; fi
+            sleep 10
+          done
+          echo "::error::Приложение не ответило на /api/health"; exit 1
+
+      - name: Убрать ключ
+        if: always()
+        run: rm -f key.json

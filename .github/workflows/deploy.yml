@@ -25,8 +25,6 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    env:
-      IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/kvizy:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +52,18 @@ jobs:
           fi
           if [ -n "$missing" ]; then echo "::error::Не заданы секреты:$missing (см. docs/yandex_cloud.md)"; exit 1; fi
 
+      - name: Подготовить значения (убрать лишние пробелы и переносы строк из секретов)
+        if: steps.check.outputs.skip != '1'
+        env:
+          REG: ${{ secrets.YC_REGISTRY_ID }}
+          FOLDER: ${{ secrets.YC_FOLDER_ID }}
+          SA: ${{ secrets.YC_SA_ID }}
+        run: |
+          clean() { printf '%s' "$1" | tr -d '[:space:]'; }
+          echo "IMAGE=cr.yandex/$(clean "$REG")/kvizy:${{ github.sha }}" >> $GITHUB_ENV
+          echo "FOLDER_ID=$(clean "$FOLDER")" >> $GITHUB_ENV
+          echo "SA_ID=$(clean "$SA")" >> $GITHUB_ENV
+
       - name: Установить yc
         if: steps.check.outputs.skip != '1'
         run: |
@@ -67,7 +77,7 @@ jobs:
         run: |
           echo "$KEY" > key.json
           yc config set service-account-key key.json
-          yc config set folder-id "${{ secrets.YC_FOLDER_ID }}"
+          yc config set folder-id "$FOLDER_ID"
           echo "$KEY" | docker login --username json_key --password-stdin cr.yandex
 
       - name: Собрать и загрузить образ
@@ -84,8 +94,11 @@ jobs:
           KEY_SECRET: ${{ secrets.KEY_SECRET }}
           YDB_ENDPOINT: ${{ secrets.YDB_ENDPOINT }}
           YDB_DATABASE: ${{ secrets.YDB_DATABASE }}
-          YANDEX_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
         run: |
+          clean() { printf '%s' "$1" | tr -d '[:space:]'; }
+          ENVS="KVIZY_PASSWORD=$(clean "$KVIZY_PASSWORD"),SESSION_SECRET=$(clean "$SESSION_SECRET"),KEY_SECRET=$(clean "$KEY_SECRET")"
+          ENVS="$ENVS,YDB_ENDPOINT=$(clean "$YDB_ENDPOINT"),YDB_DATABASE=$(clean "$YDB_DATABASE"),YANDEX_FOLDER_ID=$FOLDER_ID"
+          ENVS="$ENVS,AI_PROVIDER=yandex,MONTHLY_BUDGET_RUB=500"
           yc serverless container get --name kvizy >/dev/null 2>&1 || yc serverless container create --name kvizy
           yc serverless container allow-unauthenticated-invoke --name kvizy
           yc serverless container revision deploy \
@@ -94,8 +107,8 @@ jobs:
             --cores 1 --core-fraction 100 --memory 1GB \
             --concurrency 4 \
             --execution-timeout 600s \
-            --service-account-id "${{ secrets.YC_SA_ID }}" \
-            --environment "KVIZY_PASSWORD=$KVIZY_PASSWORD,SESSION_SECRET=$SESSION_SECRET,KEY_SECRET=$KEY_SECRET,YDB_ENDPOINT=$YDB_ENDPOINT,YDB_DATABASE=$YDB_DATABASE,YANDEX_FOLDER_ID=$YANDEX_FOLDER_ID,AI_PROVIDER=yandex,MONTHLY_BUDGET_RUB=500"
+            --service-account-id "$SA_ID" \
+            --environment "$ENVS"
           echo "Адрес приложения:"
           yc serverless container get --name kvizy --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])"
 

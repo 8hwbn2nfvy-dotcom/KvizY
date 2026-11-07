@@ -119,6 +119,16 @@ def replace(material: str, slots: list[dict]) -> dict:
     return {"questions": out}
 
 
+def review(mistakes: list[dict]) -> dict:
+    topics: dict[str, list[dict]] = {}
+    for m in mistakes:
+        topics.setdefault(m["topic"], []).append(m)
+    return {"topics": [{"topic": t, "explain": "Главное в этой теме: " + "; ".join(x["right"] for x in ms)[:400] + ".",
+                        "key_points": [x["right"] for x in ms][:3], "mistake": "Ты ответил: " + ms[0]["your"] + ".",
+                        "example": "Например: " + ms[0]["text"][:120], "reread": ms[0].get("quote", "")}
+                       for t, ms in topics.items()]}
+
+
 def check_open(reference: str, answer: str) -> dict:
     a = {w for w in norm_for_match(answer).split() if len(w) > 3}
     r = {w for w in norm_for_match(reference).split() if len(w) > 3}

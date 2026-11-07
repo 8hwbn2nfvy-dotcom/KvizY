@@ -28,7 +28,7 @@ from app.quiz.material import (MaterialError, QuoteIndex, allocate, estimate_tok
 from app.quiz.questions import TYPES, finalize, is_duplicate, normalize, problems, public, snapshot, type_plan
 
 TEXT_PART = 200_000          # символов в одной строке quiz_texts (YDB любит небольшие ячейки)
-TOKENS_PER_QUESTION = 380    # сколько токенов ответа закладываем на один вопрос
+TOKENS_PER_QUESTION = 450    # сколько токенов ответа закладываем на один вопрос
 PROMPT_OVERHEAD = 2200       # системные правила + инструкции + схема
 
 
@@ -269,7 +269,8 @@ def make_questions(quiz: Quiz, material: str, n: int, difficulty: str, hints: bo
                                 hints=hints, material=chunk, instruction=instruction,
                                 part=(k, len(jobs)) if len(jobs) > 1 else None,
                                 known_topics=[t["name"] for t in topics] or known_topics,
-                                avoid=prev if (prev and (len(jobs) > 1 or avoid)) else None),
+                                avoid=prev if (prev and (len(jobs) > 1 or avoid)) else None,
+                                seed=hash((quiz.id, k)) & 0xFFFF),
             expect=("questions",), quiz_id=quiz.id, quiz_title=quiz.topic, user_id=quiz.user_id,
             max_tokens=min(p.max_output, 600 + TOKENS_PER_QUESTION * cnt),
             mock=lambda chunk=chunk, cnt=cnt, plan=plan, k=k, prev=prev: mockai.quiz(chunk, cnt, plan, offset=k * 31, avoid=prev))
@@ -630,6 +631,71 @@ def check_open(quiz: Quiz, question: Question, text: str) -> tuple[float, str]:
     score = 1.0 if score >= 0.75 else 0.5 if score >= 0.25 else 0.0
     comment = str(data.get("comment") or data.get("explanation") or data.get("комментарий") or "").strip()
     return score, comment
+
+
+# --- Разбор ошибок -------------------------------------------------------------------
+
+def review_attempt(attempt_id: str, force: bool = False) -> dict:
+    """Кнопка «Разобрать ошибки» в итоге: один запрос к ИИ по всем ошибкам, разбор по темам.
+    Готовый разбор хранится в попытке — второй раз не запрашиваем (экономия)."""
+    from app.db import Answer, Attempt
+    from app.quiz.scoring import describe_answer, describe_response
+
+    with SessionLocal() as s:
+        att = s.get(Attempt, attempt_id)
+        if att is None:
+            raise QuizError("Попытка не найдена")
+        if att.review and not force:
+            return loads(att.review, {})
+        quiz = s.get(Quiz, att.quiz_id)
+        subj = s.get(Subject, quiz.subject_id) if quiz else None
+        answers = s.scalars(sa.select(Answer).where(Answer.attempt_id == attempt_id)).all()
+    mistakes = []
+    for a in answers:
+        if a.correct:
+            continue
+        snap = loads(a.snapshot, {})
+        if not snap:
+            continue
+        mistakes.append({"topic": snap.get("topic") or "Без темы", "subtopic": snap.get("subtopic") or "",
+                         "text": snap["text"], "quote": snap.get("quote", ""),
+                         "your": describe_response(snap["qtype"], snap["options"], loads(a.response, {})),
+                         "right": describe_answer(snap["qtype"], snap["options"], snap["answer"])})
+    if not mistakes:
+        return {"topics": [], "message": "Ошибок нет — разбирать нечего 🎉"}
+    material = quiz_material(quiz) if quiz else ""
+    p = ai.get_provider()
+    _, budget = _limits(p)
+    budget = min(budget, 40000) - 1500
+    ex = _excerpt(material, [m["quote"] for m in mistakes], budget) if material else ""
+    data = ai.ask_json("review", prompts.review_prompt(mistakes=mistakes[:15], material=ex,
+                                                       subject=subj.name if subj else "", title=quiz.topic if quiz else ""),
+                       expect=("topics",), quiz_id=quiz.id if quiz else None, quiz_title=quiz.topic if quiz else None,
+                       user_id=att.user_id, max_tokens=min(p.max_output, 700 + 500 * len({m["topic"] for m in mistakes})),
+                       mock=lambda: mockai.review(mistakes))
+    items = data.get("topics") if isinstance(data, dict) else data
+    if isinstance(items, dict):
+        items = [items]
+    out = []
+    for t in items or []:
+        if not isinstance(t, dict):
+            continue
+        kp = t.get("key_points") or t.get("главное") or []
+        out.append({"topic": str(t.get("topic") or t.get("тема") or "").strip(),
+                    "explain": str(t.get("explain") or t.get("explanation") or t.get("объяснение") or "").strip(),
+                    "key_points": [str(x) for x in kp] if isinstance(kp, list) else [str(kp)],
+                    "mistake": str(t.get("mistake") or t.get("ошибка") or "").strip(),
+                    "example": str(t.get("example") or t.get("пример") or "").strip(),
+                    "reread": str(t.get("reread") or t.get("quote") or t.get("цитата") or "").strip()})
+    out = [t for t in out if t["explain"]]
+    if not out:
+        raise QuizError("ИИ не прислал разбор. Нажми «Повторить».")
+    review = {"topics": out}
+    with SessionLocal() as s:
+        att = s.get(Attempt, attempt_id)
+        att.review = dumps(review)
+        s.commit()
+    return review
 
 
 # --- Удаление -------------------------------------------------------------------------

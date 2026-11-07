@@ -160,6 +160,7 @@ def result(attempt_id: str) -> dict:
         "by_topic": loads(att.by_topic, {}), "by_subtopic": loads(att.by_subtopic, {}),
         "duration": att.duration_sec, "date": att.finished_at.isoformat() if att.finished_at else None,
         "cards": cards, "unchecked": sum(1 for c in cards if c["status"] == "unchecked"),
+        "review": loads(att.review, None), "mistakes": sum(1 for c in cards if not c["correct"]),
     }
 
 
@@ -314,7 +315,8 @@ def usage_summary() -> dict:
             q["rub"] += u.cost_rub or 0
             q["calls"] += 1
     names = {"quiz": "создание квиза", "replace": "замена вопросов", "check_open": "проверка открытых ответов",
-             "subject_quiz": "квиз по предмету", "ping": "проверка связи"}
+             "subject_quiz": "квиз по предмету", "ping": "проверка связи",
+             "review": "разбор ошибок"}
     return {"month": start.strftime("%Y-%m"), "total": round(total, 2), "budget": store.budget(),
             "by_purpose": [{"purpose": k, "name": names.get(k, k), "rub": round(v["rub"], 2), "calls": v["calls"],
                             "tokens": v["tokens"]} for k, v in sorted(by_purpose.items(), key=lambda x: -x[1]["rub"])],

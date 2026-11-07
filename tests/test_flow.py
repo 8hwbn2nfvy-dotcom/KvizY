@@ -272,3 +272,21 @@ def test_login_rate_limit():
     for _ in range(5):
         assert c.post("/api/login", json={"password": "bad"}).status_code == 401
     assert c.post("/api/login", json={"password": "bad"}).status_code == 429
+
+
+def test_review_mistakes(client):
+    """Разбор ошибок: делается по кнопке, сохраняется, второй раз ИИ не спрашиваем."""
+    quizzes = [q for q in client.get("/api/quizzes").json() if q["status"] == "ready"]
+    res = play(client, quizzes[0]["id"], right=False)
+    full = client.get(f"/api/attempts/{res['attempt_id']}").json()
+    assert full["mistakes"] > 0 and full["review"] is None
+    from app.db import SessionLocal, Usage
+    with SessionLocal() as s:
+        before = s.query(Usage).filter(Usage.purpose == "review").count()
+    r = client.post(f"/api/attempts/{res['attempt_id']}/review").json()
+    assert r["topics"] and r["topics"][0]["explain"]
+    r2 = client.post(f"/api/attempts/{res['attempt_id']}/review").json()
+    assert r2 == r
+    with SessionLocal() as s:
+        assert s.query(Usage).filter(Usage.purpose == "review").count() == before + 1
+    assert client.get(f"/api/attempts/{res['attempt_id']}").json()["review"] == r

@@ -161,6 +161,7 @@ class Attempt(Base):
     by_topic: Mapped[str | None] = mapped_column(Txt)      # JSON {тема: {score, max, pct}}
     by_subtopic: Mapped[str | None] = mapped_column(Txt)   # JSON {"тема / подтема": {...}}
     duration_sec: Mapped[int | None] = mapped_column(sa.Integer)
+    review: Mapped[str | None] = mapped_column(Txt)        # JSON: разбор ошибок от ИИ (кнопка в итоге)
 
 
 class Answer(Base):

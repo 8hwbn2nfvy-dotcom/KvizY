@@ -55,9 +55,15 @@ def m002_users(engine):
     add_column(engine, "users", "ai_limit_rub", "Double", "FLOAT")
 
 
+def m003_review(engine):
+    """Разбор ошибок в попытке."""
+    add_column(engine, "attempts", "review", "Utf8", "TEXT")
+
+
 MIGRATIONS = [
     ("001_init", m001_init),
     ("002_users", m002_users),
+    ("003_review", m003_review),
 ]
 
 

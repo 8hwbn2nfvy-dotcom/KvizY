@@ -316,6 +316,18 @@ def result(attempt_id: str, user_id: str = User):
         _err(e, 404)
 
 
+@router.post("/attempts/{attempt_id}/review")
+def review(attempt_id: str, user_id: str = User):
+    """Разбор ошибок от ИИ (один запрос; готовый разбор берётся из базы)."""
+    _own("attempt", attempt_id, user_id)
+    try:
+        return pipeline.review_attempt(attempt_id)
+    except AIError as e:
+        raise HTTPException(502, str(e)) from e
+    except pipeline.QuizError as e:
+        _err(e)
+
+
 @router.post("/questions/{question_id}/replace")
 def replace(question_id: str, user_id: str = User):
     _own("question", question_id, user_id)

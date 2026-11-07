@@ -14,7 +14,7 @@ const PALETTE_NAMES = {
 };
 const PALETTE_BG = {classic:"#ffffff",dark:"#121212",beige:"#f4ede1",bluegray:"#edf1f5",sage:"#edf1ea",terminal:"#050a05",sakura:"#fff4f6",desert:"#f2e5cf",deep:"#0a1828",neon:"#0c0a19"};
 const DIFF = { easy: "лёгкий", medium: "средний", hard: "на размышление" };
-const PURPOSE = { quiz: "создание квиза", replace: "замена вопросов", check_open: "проверка ответов", subject_quiz: "квиз по предмету", ping: "проверка связи" };
+const PURPOSE = { quiz: "создание квиза", replace: "замена вопросов", check_open: "проверка ответов", subject_quiz: "квиз по предмету", ping: "проверка связи", review: "разбор ошибок" };
 
 const S = { boot: null, ready: false };   // общее состояние: данные /api/bootstrap
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -588,11 +588,14 @@ async function pageResult(attemptId) {
     <div class="panel"><div class="big-pct">${pct(r.pct)}</div><div class="muted">${num(r.score)} из ${num(r.max)} баллов${mins ? " · " + mins : ""}</div>
     ${r.unchecked ? `<div class="warn-box">Не проверено открытых ответов: ${r.unchecked}. Они пока считаются как 0.</div>` : ""}</div>
     <h2>По темам</h2><div class="panel bars">${topicBlock || '<span class="muted">нет данных</span>'}</div>
-    <h2>Все карточки</h2><p class="muted small">Тапни на карточку — увидишь правильный ответ, объяснение и цитату.</p>
+    ${r.mistakes ? `<h2>Разбор ошибок</h2><div class="panel" id="review"></div>` : ""}
+    <h2>Все карточки</h2><p class="muted small">У ошибок сразу видно правильный ответ и объяснение. Тапни на карточку — увидишь всё подробно и цитату.</p>
     <ul class="list" id="cards">${r.cards.map((c, i) => `<li><button type="button" class="item ${c.correct ? "ok" : "bad"}" data-i="${i}">
       <div class="t">${i + 1}. ${esc(c.text)}</div><div class="s"><span>${c.correct ? "✓ верно" : c.score > 0 ? "½ частично" : "✕ неверно"}</span><span>${num(c.score)} из ${num(c.max)}</span><span>${esc(c.topic || "")}</span></div>
+      ${c.correct ? "" : `<div class="why"><div><b>Правильно:</b> ${esc(c.right_answer)}</div>${c.explanation ? `<div style="margin-top:6px">${esc(c.explanation)}</div>` : ""}</div>`}
       <div class="detail" hidden></div></button></li>`).join("")}</ul>
     <div class="actions"><a class="btn" href="#/play/${r.quiz_id}">Пройти снова</a><a class="btn secondary" href="#/history">В историю</a></div>`;
+  if (r.mistakes) renderReview(r);
   $("#cards").onclick = (e) => {
     const b = e.target.closest("button.item"); if (!b) return;
     const d = $(".detail", b); const c = r.cards[+b.dataset.i];
@@ -604,6 +607,28 @@ async function pageResult(attemptId) {
         ${c.flag_name ? `<dt>Пометка</dt><dd>${esc(c.flag_name)}</dd>` : ""}</dl>`;
     }
     d.hidden = !d.hidden;
+  };
+}
+
+/** Разбор ошибок: по кнопке ИИ объясняет темы, где были ошибки. Готовый разбор хранится и показывается сразу. */
+function renderReview(r) {
+  const box = $("#review");
+  const show = (rv) => {
+    if (!rv.topics || !rv.topics.length) { box.innerHTML = `<p>${esc(rv.message || "Разбирать нечего.")}</p>`; return; }
+    box.innerHTML = rv.topics.map((t) => `<div class="review-topic"><h3>${esc(t.topic)}</h3>
+      <p>${esc(t.explain)}</p>
+      ${t.key_points && t.key_points.length ? `<b>Запомни:</b><ul>${t.key_points.map((k) => `<li>${esc(k)}</li>`).join("")}</ul>` : ""}
+      ${t.mistake ? `<p><b>Где была ошибка:</b> ${esc(t.mistake)}</p>` : ""}
+      ${t.example ? `<p><b>Пример:</b> ${esc(t.example)}</p>` : ""}
+      ${t.reread ? `<b>Перечитай:</b><blockquote>${esc(t.reread)}</blockquote>` : ""}</div>`).join("");
+  };
+  if (r.review) { show(r.review); return; }
+  box.innerHTML = `<p class="muted">ИИ объяснит простыми словами темы, где ты ошибся (${r.mistakes} ошиб.): суть, что запомнить, где была ошибка, пример и что перечитать.</p>
+    <button class="btn block" id="review-go">Разобрать ошибки</button>`;
+  $("#review-go").onclick = async () => {
+    box.innerHTML = `<div class="row"><div class="spinner"></div><span class="muted">разбираю ошибки… (10–30 секунд)</span></div>`;
+    try { show(await api(`/api/attempts/${r.attempt_id}/review`, { method: "POST" })); }
+    catch (e) { errorBox(box, e, () => renderReview(r), "Разбор не получился"); }
   };
 }
 

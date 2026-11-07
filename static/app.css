@@ -250,6 +250,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent-2); 
 .item .detail dt { font-weight: 650; margin-top: 8px; }
 .item .detail dd { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .item .detail blockquote { margin: 4px 0 0; padding: 8px 12px; border-left: 3px solid var(--accent-2); background: var(--surface-2); border-radius: 0 10px 10px 0; }
+.item .why { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 15px; overflow-wrap: anywhere; }
+.review-topic + .review-topic { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.review-topic h3 { margin-top: 0; }
+.review-topic ul { margin: 6px 0 10px; padding-left: 22px; }
+.review-topic blockquote { margin: 4px 0 0; padding: 8px 12px; border-left: 3px solid var(--accent-2); background: var(--surface-2); border-radius: 0 10px 10px 0; }
 .pct-chip { font-weight: 700; font-variant-numeric: tabular-nums; }
 .status-chip { font-size: 13px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .status-chip.error { color: var(--bad); } .status-chip.running { color: var(--accent-2); }

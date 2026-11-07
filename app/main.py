@@ -20,11 +20,29 @@ VERSION = "1.0.0"
 _started = time.time()
 
 
+_db = {"ready": False, "error": ""}
+
+
+def ensure_db() -> str:
+    """Подключиться к базе и выполнить миграции. Если не вышло — НЕ падаем, а запоминаем ошибку:
+    её покажет /api/health и любой запрос к API (чтобы было видно, что чинить)."""
+    if _db["ready"]:
+        return ""
+    try:
+        if db.engine is None:
+            db.init_engine()
+        migrations.migrate(db.engine)
+        _db.update(ready=True, error="")
+    except Exception as e:
+        traceback.print_exc()
+        db.engine = None if not _db["ready"] else db.engine
+        _db["error"] = f"{type(e).__name__}: {e}"[:1500]
+    return _db["error"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if db.engine is None:
-        db.init_engine()
-    migrations.migrate(db.engine)
+    ensure_db()
     yield
 
 
@@ -33,6 +51,16 @@ app = FastAPI(title="KvizY", lifespan=lifespan, docs_url=None, redoc_url=None)
 from app.api.routes import router  # noqa: E402
 
 app.include_router(router)
+
+
+@app.middleware("http")
+async def need_db(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.url.path != "/api/health" and not _db["ready"]:
+        import anyio
+        err = await anyio.to_thread.run_sync(ensure_db)
+        if err:
+            return JSONResponse({"detail": f"Нет связи с базой данных: {err}"}, status_code=503)
+    return await call_next(request)
 
 
 @app.exception_handler(Exception)
@@ -47,6 +75,10 @@ def health():
     import sqlalchemy as sa
 
     t = time.time()
+    err = ensure_db()
+    if err:
+        return JSONResponse({"ok": False, "db": err, "version": VERSION, "uptime_sec": round(time.time() - _started)},
+                            status_code=503)
     try:
         with db.SessionLocal() as s:
             s.execute(sa.select(db.User.id).limit(1)).all()

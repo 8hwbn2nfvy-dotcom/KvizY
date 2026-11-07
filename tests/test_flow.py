@@ -136,12 +136,14 @@ def test_quiz_from_url_and_full_path(client, site):
     att = client.post(f"/api/quizzes/{qid}/attempts").json()
     q0 = att["questions"][0]
     texts = {q0["text"]}
+    prev_type = q0["qtype"]
     changed = 0
     for _ in range(8):
         r = client.post(f"/api/questions/{q0['id']}/replace").json()
         if r["changed"]:
             changed += 1
-            assert r["question"]["qtype"] == q0["qtype"]
+            assert r["question"]["qtype"] != prev_type  # при замене меняется и вид вопроса
+            prev_type = r["question"]["qtype"]
             assert r["question"]["text"] not in texts
             texts.add(r["question"]["text"])
         else:

@@ -212,9 +212,13 @@ def _replace_round(quiz: Quiz, slots: list[dict], material: str, p, hints: bool,
             sd = next((g for g in group if g["slot"] == slot), None)
             if sd is None:
                 continue
+            any_type = sd["type"] == "any"
             q = normalize(raw, {"topic": sd.get("topic", ""), "subtopic": sd.get("subtopic", ""),
-                                "qtype": sd["type"], "difficulty": sd.get("difficulty", "medium")})
-            if q["qtype"] != sd["type"] and sd["type"] in TYPES:
+                                "qtype": "" if any_type else sd["type"], "difficulty": sd.get("difficulty", "medium")})
+            if any_type:
+                if q["qtype"] == sd.get("not_type"):
+                    q["_wrong_type"] = True
+            elif q["qtype"] != sd["type"] and sd["type"] in TYPES:
                 q["_wrong_type"] = True
             out[slot] = q
     return out
@@ -531,7 +535,9 @@ def _subject_questions(quiz: Quiz, subj: Subject, params: dict, n: int, difficul
 # --- Замена одного вопроса ----------------------------------------------------------
 
 def replace_question(question_id: str) -> dict:
-    """Кнопка «заменить вопрос». → {"changed": bool, "message": str, "question": {...}}"""
+    """Кнопка «заменить вопрос». Новый вопрос — той же темы и сложности, но ДРУГОГО вида.
+    Если ИИ прислал неудачный вопрос — одна повторная попытка, потом честное сообщение.
+    → {"changed": bool, "message": str, "question": {...}}"""
     with SessionLocal() as s:
         q = s.get(Question, question_id)
         if q is None:
@@ -550,31 +556,42 @@ def replace_question(question_id: str) -> dict:
     params = loads(quiz.params, {})
     hints = bool(params.get("hints"))
     p = ai.get_provider()
+    quotes = QuoteIndex(material)
     avoid = [h.get("text", "") for h in history] + [q.text]
-    slot = {"slot": "s1", "type": q.qtype, "topic": q.topic, "subtopic": q.subtopic, "difficulty": q.difficulty,
-            "flag": q.flag or "", "near_quote": q.quote or "", "avoid": avoid + others[:20]}
-    got = _replace_round(quiz, [slot], material, p, hints, subj.name if subj else "").get("s1")
-    if not got:
-        return {"changed": False, "message": "ИИ не прислал новый вопрос. Замена не засчитана — попробуй ещё раз.",
-                "question": public(q)}
-    probs = problems(got, QuoteIndex(material))
-    if got.get("_wrong_type"):
-        probs.append(f"другой вид вопроса ({got['qtype']})")
-    if is_duplicate(got.get("text", ""), avoid):
-        return {"changed": False, "message": "ИИ прислал такой же вопрос, как раньше. Замена не засчитана — попробуй ещё раз.",
-                "question": public(q)}
-    if is_duplicate(got.get("text", ""), others):
-        return {"changed": False, "message": "ИИ прислал вопрос, который уже есть в квизе. Замена не засчитана — попробуй ещё раз.",
-                "question": public(q)}
-    if probs:
-        nice = ", ".join("цитаты нет в материале" if x == "quote" else x for x in probs)
-        return {"changed": False, "message": f"Новый вопрос не прошёл проверку ({nice}). Замена не засчитана — попробуй ещё раз.",
+    reason = "ИИ не прислал новый вопрос"
+    got = None
+    for _attempt in range(2):
+        slot = {"slot": "s1", "type": "any", "not_type": q.qtype, "topic": q.topic, "subtopic": q.subtopic,
+                "difficulty": q.difficulty, "flag": q.flag or "", "near_quote": q.quote or "",
+                "avoid": avoid + others[:20]}
+        cand = _replace_round(quiz, [slot], material, p, hints, subj.name if subj else "").get("s1")
+        if not cand:
+            reason = "ИИ не прислал новый вопрос"
+            continue
+        if is_duplicate(cand.get("text", ""), avoid):
+            reason = "ИИ прислал такой же вопрос, как раньше"
+            continue
+        if is_duplicate(cand.get("text", ""), others):
+            reason = "ИИ прислал вопрос, который уже есть в квизе"
+            continue
+        probs = problems(cand, quotes)
+        if cand.get("_wrong_type"):
+            probs.append("вид вопроса не поменялся")
+        if probs:
+            reason = "новый вопрос не прошёл проверку (" + ", ".join(
+                "цитаты нет в материале" if x == "quote" else x for x in probs) + ")"
+            continue
+        got = cand
+        break
+    if got is None:
+        return {"changed": False, "message": f"{reason[:1].upper()}{reason[1:]}. Замена не засчитана — попробуй ещё раз.",
                 "question": public(q)}
     got["difficulty"] = q.difficulty
     finalize(got, hints)
     with SessionLocal() as s:
         q = s.get(Question, question_id)
         history.append(snapshot(q))
+        q.qtype = got["qtype"]
         q.text, q.options, q.answer = got["text"], dumps(got["options"]), dumps(got["answer"])
         q.explanation, q.quote, q.hint = got.get("explanation", ""), got.get("quote", ""), got.get("hint", "")
         q.subtopic = got.get("subtopic") or q.subtopic

@@ -162,8 +162,19 @@ def normalize(raw: dict, defaults: dict | None = None) -> dict:
         val = _bool(correct_raw if correct_raw is not None else raw.get("value"))
         q["options"], q["answer"] = ["Верно", "Неверно"], {"value": val}
     elif t == "open":
-        ref = correct_raw if isinstance(correct_raw, str) else _get(raw, "reference", "reference_answer", "model_answer", "эталон", default="")
-        kp = _get(raw, "key_points", "keypoints", "ключевые_мысли", "criteria", default=[])
+        # Образец ответа ИИ называет по-разному и кладёт куда попало — собираем из всех мест.
+        ref = _get(raw, "reference", "reference_answer", "model_answer", "sample_answer", "example_answer",
+                   "expected_answer", "ideal_answer", "образец", "эталон", "образец_ответа", default="")
+        if not ref:
+            ref = correct_raw
+        if isinstance(ref, dict):
+            ref = _get(ref, "text", "answer", "reference", "value", default="")
+        if isinstance(ref, list):
+            ref = "; ".join(str(x) for x in ref if x)
+        kp = _get(raw, "key_points", "keypoints", "key_ideas", "ключевые_мысли", "главные_мысли", "criteria", default=[])
+        if not str(ref or "").strip():
+            # нет образца — собираем его из главных мыслей или объяснения
+            ref = "; ".join(str(x) for x in kp) if isinstance(kp, list) and kp else q["explanation"]
         q["options"], q["answer"] = [], {"reference": str(ref or "").strip(),
                                          "key_points": [str(x) for x in kp] if isinstance(kp, list) else [str(kp)]}
     elif t == "match":

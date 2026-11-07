@@ -109,7 +109,10 @@ def replace(material: str, slots: list[dict]) -> dict:
     out = []
     for k, s in enumerate(slots):
         avoid = s.get("avoid", [])
-        q = _make(s["type"], 7 + k + len(avoid) * 3, sents, s.get("topic", ""), s.get("subtopic", ""), avoid, words)
+        t = s["type"]
+        if t == "any":
+            t = next(x for x in ["single", "tf", "fill", "multi", "open"] if x != s.get("not_type"))
+        q = _make(t, 7 + k + len(avoid) * 3, sents, s.get("topic", ""), s.get("subtopic", ""), avoid, words)
         q["slot"] = s["slot"]
         q["flag"] = s.get("flag", "")
         out.append(q)

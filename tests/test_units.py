@@ -159,3 +159,15 @@ def test_grade():
     assert grade("single", [], {"correct": [0]}, {"timeout": True}) == 0
     assert fill_ok("Электролиз", ["электролиз"]) and fill_ok("электролис", ["электролиз"])
     assert not fill_ok("ток", ["тег"])
+
+
+def test_open_reference_anywhere():
+    """Образец открытого ответа ИИ кладёт в разные поля — находим везде."""
+    for raw in [{"type": "open", "text": "Объясни, что такое множество", "correct": ["набор", "объектов"]},
+                {"type": "open", "text": "Объясни, что такое множество", "sample_answer": "Набор объектов"},
+                {"type": "open", "text": "Объясни, что такое множество", "answer": {"text": "Набор объектов"}},
+                {"type": "open", "text": "Объясни, что такое множество", "key_points": ["набор объектов"]},
+                {"type": "open", "text": "Объясни, что такое множество", "explanation": "Это набор объектов."}]:
+        q = normalize(raw)
+        assert len(q["answer"]["reference"]) >= 5, raw
+        assert "нет образца ответа" not in problems(q, None)

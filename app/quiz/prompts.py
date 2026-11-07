@@ -34,7 +34,7 @@ TYPE_RULES = """Правила по видам:
 - single: ровно 4 варианта, ровно 1 правильный, correct — номер правильного (с 0). Неправильные варианты правдоподобные.
 - multi: 4–6 вариантов, правильных от 2 и не все; correct — список номеров (с 0).
 - tf: утверждение, correct — true или false. Делай и верные, и неверные утверждения.
-- open: вопрос, на который отвечают 1–3 предложениями своими словами; reference — образец, key_points — 2–4 главные мысли.
+- open: вопрос, на который отвечают 1–3 предложениями своими словами; ОБЯЗАТЕЛЬНО reference — образец ответа, key_points — 2–4 главные мысли.
 - match: 3–5 пар, items в left разные, в right разные.
 - order: 3–6 шагов процесса в ПРАВИЛЬНОМ порядке (перемешает программа). Только если в материале есть последовательность.
 - fill: одно предложение с ОДНИМ пропуском ___, accepted — правильное слово и допустимые варианты.
@@ -74,14 +74,21 @@ def quiz_prompt(*, title: str, subject: str, n: int, difficulty: str, plan: dict
 
 
 def replace_prompt(*, slots: list[dict], material: str, hints: bool, subject: str, title: str) -> str:
-    """slots: [{slot, topic, subtopic, type, difficulty, flag, avoid: [...]}] — по одному новому вопросу на слот."""
-    want = [{"slot": s["slot"], "type": s["type"], "topic": s.get("topic", ""), "subtopic": s.get("subtopic", ""),
+    """slots: [{slot, topic, subtopic, type, difficulty, flag, avoid: [...]}] — по одному новому вопросу на слот.
+    type = "any" + not_type — «любой вид, кроме этого» (кнопка «заменить вопрос»)."""
+    def kind(s):
+        if s["type"] == "any":
+            return f"любой вид, КРОМЕ {s.get('not_type')} ({TYPE_NAMES.get(s.get('not_type'), '')}); выбери тот, что лучше подходит к материалу"
+        return s["type"]
+    want = [{"slot": s["slot"], "type": kind(s), "topic": s.get("topic", ""), "subtopic": s.get("subtopic", ""),
              "difficulty": DIFFICULTIES.get(s.get("difficulty", "medium"), "средний"), "flag": s.get("flag", ""),
              "не_похож_на": s.get("avoid", [])[:25]} for s in slots]
     return "\n".join([
         f"Нужны новые вопросы для квиза «{title}» (предмет «{subject}»). Сделай по одному вопросу на каждый слот ниже.",
-        "Новый вопрос — той же темы, подтемы, вида и сложности, что указаны в слоте, но НЕ похожий на вопросы из «не_похож_на» "
-        "(другой факт или другая сторона темы).",
+        "Новый вопрос — той же темы, подтемы и сложности, что указаны в слоте, вида — как сказано в поле type слота, "
+        "и НЕ похожий на вопросы из «не_похож_на» (другой факт или другая сторона темы).",
+        "В ответе поле type — один из кодов: single, multi, tf, open, match, order, fill.",
+        "У open обязательно заполни reference (образец ответа) и key_points.",
         ("У вопросов с flag outside/logic добавь hint (1 предложение, не выдаёт ответ)." if hints else "hint везде пустой."),
         "Слоты:", json.dumps(want, ensure_ascii=False, indent=1),
         TYPE_RULES,

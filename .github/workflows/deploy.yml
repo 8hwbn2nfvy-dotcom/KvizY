@@ -100,7 +100,10 @@ jobs:
           ENVS="$ENVS,YDB_ENDPOINT=$(clean "$YDB_ENDPOINT"),YDB_DATABASE=$(clean "$YDB_DATABASE"),YANDEX_FOLDER_ID=$FOLDER_ID"
           ENVS="$ENVS,AI_PROVIDER=yandex,MONTHLY_BUDGET_RUB=500"
           yc serverless container get --name kvizy >/dev/null 2>&1 || yc serverless container create --name kvizy
-          yc serverless container allow-unauthenticated-invoke --name kvizy
+          # Сделать контейнер публичным может только роль admin. Обычно это включают один раз в консоли
+          # (контейнер → «Публичный контейнер»), поэтому ошибка здесь не останавливает деплой.
+          yc serverless container allow-unauthenticated-invoke --name kvizy 2>/dev/null \
+            || echo "::warning::Не удалось сделать контейнер публичным из деплоя. Включи «Публичный контейнер» в консоли Yandex Cloud (один раз)."
           yc serverless container revision deploy \
             --container-name kvizy \
             --image "$IMAGE" \

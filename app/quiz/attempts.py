@@ -203,12 +203,12 @@ def quiz_detail(quiz_id: str) -> dict:
                           "duration": a.duration_sec} for a in atts if a.finished_at]}
 
 
-def _aggregate(quiz_filter=None) -> dict:
+def _aggregate(user_id: str, quiz_filter=None) -> dict:
     """% по темам и подтемам — по ПОСЛЕДНЕЙ попытке каждого квиза (так видно, что знаешь сейчас)."""
     with SessionLocal() as s:
         subs = _subjects_map(s)
-        quizzes = {q.id: q for q in s.scalars(sa.select(Quiz)).all()}
-        atts = [a for a in s.scalars(sa.select(Attempt).where(Attempt.finished_at.is_not(None))
+        quizzes = {q.id: q for q in s.scalars(sa.select(Quiz).where(Quiz.user_id == user_id)).all()}
+        atts = [a for a in s.scalars(sa.select(Attempt).where(Attempt.user_id == user_id, Attempt.finished_at.is_not(None))
                                      .order_by(Attempt.finished_at)).all()]
     if quiz_filter:
         atts = [a for a in atts if a.quiz_id in quizzes and quiz_filter(quizzes[a.quiz_id])]
@@ -247,14 +247,14 @@ def _aggregate(quiz_filter=None) -> dict:
     return {"topics": out, "history": history, "growth": growth}
 
 
-def stats() -> dict:
-    return _aggregate()
+def stats(user_id: str) -> dict:
+    return _aggregate(user_id)
 
 
-def subjects() -> list[dict]:
+def subjects(user_id: str) -> list[dict]:
     with SessionLocal() as s:
-        subs = s.scalars(sa.select(Subject).order_by(Subject.name)).all()
-        quizzes = s.scalars(sa.select(Quiz).order_by(Quiz.created_at.desc())).all()
+        subs = s.scalars(sa.select(Subject).where(Subject.user_id == user_id).order_by(Subject.name)).all()
+        quizzes = s.scalars(sa.select(Quiz).where(Quiz.user_id == user_id).order_by(Quiz.created_at.desc())).all()
     out = []
     for sb in subs:
         qs = [q for q in quizzes if q.subject_id == sb.id]
@@ -272,7 +272,7 @@ def subject_detail(subject_id: str) -> dict:
         qs = s.scalars(sa.select(Quiz).where(Quiz.subject_id == subject_id).order_by(Quiz.created_at.desc())).all()
         normal_ids = [q.id for q in qs if q.kind == "normal" and q.status == "ready"]
         pool = s.scalar(sa.select(sa.func.count()).select_from(Question).where(Question.quiz_id.in_(normal_ids))) if normal_ids else 0
-    agg = _aggregate(lambda q: q.subject_id == subject_id)
+    agg = _aggregate(sb.user_id, lambda q: q.subject_id == subject_id)
     lasts = [q.last_pct for q in qs if q.last_pct is not None]
     chars = sum(q.chars or 0 for q in qs if q.kind == "normal")
     return {"id": sb.id, "name": sb.name,
@@ -291,8 +291,18 @@ def usage_summary() -> dict:
         quizzes = {q.id: q.topic for q in s.scalars(sa.select(Quiz)).all()}
     by_purpose: dict[str, dict] = {}
     by_quiz: dict[str, dict] = {}
+    by_user: dict[str, dict] = {}
+    from app.db import User
+    with SessionLocal() as s:
+        people = {x.id: x for x in s.scalars(sa.select(User)).all()}
     total = 0.0
     for u in rows:
+        who = people.get(u.user_id)
+        pu = by_user.setdefault(u.user_id or "?", {"name": (who.name or who.login) if who else "удалённый тестер",
+                                                    "rub": 0.0, "calls": 0,
+                                                    "limit": who.ai_limit_rub if who and who.role == "guest" else None})
+        pu["rub"] += u.cost_rub or 0
+        pu["calls"] += 1
         total += u.cost_rub or 0
         p = by_purpose.setdefault(u.purpose or "?", {"rub": 0.0, "calls": 0, "tokens": 0})
         p["rub"] += u.cost_rub or 0
@@ -309,4 +319,6 @@ def usage_summary() -> dict:
             "by_purpose": [{"purpose": k, "name": names.get(k, k), "rub": round(v["rub"], 2), "calls": v["calls"],
                             "tokens": v["tokens"]} for k, v in sorted(by_purpose.items(), key=lambda x: -x[1]["rub"])],
             "by_quiz": sorted([{"quiz_id": k, **v, "rub": round(v["rub"], 2)} for k, v in by_quiz.items()],
-                              key=lambda x: -x["rub"])[:30]}
+                              key=lambda x: -x["rub"])[:30],
+            "by_user": sorted([{"user_id": k, **v, "rub": round(v["rub"], 2)} for k, v in by_user.items()],
+                              key=lambda x: -x["rub"])}

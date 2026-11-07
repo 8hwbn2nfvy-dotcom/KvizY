@@ -1,10 +1,11 @@
-"""Вход по одному паролю.
+"""Вход: владелец и тестеры.
 
-- Пароль — переменная KVIZY_PASSWORD. Если пароль сменили в настройках приложения, в базе лежит
-  его хэш, и он важнее переменной.
+- Владелец входит только паролем (поле «логин» пустое). Пароль — переменная KVIZY_PASSWORD; если
+  его сменили в Настройках, в базе лежит хэш, и он важнее переменной.
+- Тестеров создаёт владелец в Настройках: логин + пароль (хранится хэшем). У каждого свои данные.
 - После входа устройство получает подписанную cookie на год (HMAC, секрет SESSION_SECRET).
-- В подпись входит «отпечаток» текущего пароля и номер версии сессии: стоит сменить пароль —
-  все старые cookie перестают подходить, и все устройства выходят.
+- В подпись входит «отпечаток» пароля и номер версии сессии: сменили пароль — все старые cookie
+  этого человека перестают подходить. Выключили тестера — он сразу выходит.
 - 5 ошибок за 5 минут с одного адреса — пауза.
 """
 from __future__ import annotations
@@ -13,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import threading
 import time
 from datetime import timedelta
@@ -21,14 +23,15 @@ import sqlalchemy as sa
 from fastapi import HTTPException, Request
 
 from app import config
-from app.db import OWNER_ID, LoginFailure, SessionLocal, User, now
+from app.db import OWNER_ID, LoginFailure, SessionLocal, User, new_id, now
 
 COOKIE = "kvizy_session"
 TTL = 60 * 60 * 24 * 365  # год
 MAX_FAILS = 5
 FAIL_WINDOW = 300
+GUEST_LIMIT_RUB = 50.0  # лимит на ИИ в месяц для нового тестера (меняется в Настройках)
 
-_cache: dict[str, tuple[float, tuple[str, int]]] = {}
+_cache: dict[str, tuple[float, tuple[str, int] | None]] = {}
 _lock = threading.Lock()
 
 
@@ -47,22 +50,34 @@ def verify_hash(pw: str, stored: str) -> bool:
         return False
 
 
-def _user_state(user_id: str = OWNER_ID) -> tuple[str, int]:
-    """(отпечаток пароля, версия сессии). Кэш на 10 секунд, чтобы не читать базу на каждый запрос."""
+def ensure_owner() -> None:
+    with SessionLocal() as s:
+        u = s.get(User, OWNER_ID)
+        if u is None:
+            s.add(User(id=OWNER_ID, session_version=1, role="owner", active=True, name="Владелец"))
+            s.commit()
+        elif u.role != "owner":
+            u.role, u.active = "owner", True
+            s.commit()
+
+
+def _user_state(user_id: str) -> tuple[str, int] | None:
+    """(отпечаток пароля, версия сессии) или None, если человека нет или он выключен.
+    Кэш на 10 секунд, чтобы не читать базу на каждый запрос."""
     with _lock:
         hit = _cache.get(user_id)
         if hit and hit[0] > time.time():
             return hit[1]
+    if user_id == OWNER_ID:
+        ensure_owner()
     with SessionLocal() as s:
         u = s.get(User, user_id)
-        if u is None:
-            u = User(id=user_id, session_version=1)
-            s.add(u)
-            s.commit()
-        stored = u.password_hash or ""
-        version = u.session_version or 1
-    fp = stored or ("env:" + hashlib.sha256(config.settings.password.encode()).hexdigest())
-    state = (hashlib.sha256(fp.encode()).hexdigest()[:16], version)
+        if u is None or (u.role == "guest" and not u.active):
+            state = None
+        else:
+            stored = u.password_hash or ""
+            fp = stored or ("env:" + hashlib.sha256(config.settings.password.encode()).hexdigest())
+            state = (hashlib.sha256(fp.encode()).hexdigest()[:16], u.session_version or 1)
     with _lock:
         _cache[user_id] = (time.time() + 10, state)
     return state
@@ -78,8 +93,11 @@ def _key() -> bytes:
     return hashlib.sha256(base.encode()).digest()
 
 
-def _sign(payload: str, user_id: str) -> str:
-    fp, version = _user_state(user_id)
+def _sign(payload: str, user_id: str) -> str | None:
+    state = _user_state(user_id)
+    if state is None:
+        return None
+    fp, version = state
     return hmac.new(_key(), f"{payload}|{fp}|{version}".encode(), hashlib.sha256).hexdigest()
 
 
@@ -99,14 +117,15 @@ def read_token(token: str | None) -> str | None:
         return None
     if int(exp) < time.time():
         return None
-    if not hmac.compare_digest(sig, _sign(f"{user_id}|{exp}", user_id)):
+    good = _sign(f"{user_id}|{exp}", user_id)
+    if good is None or not hmac.compare_digest(sig, good):
         return None
     return user_id
 
 
-def _password_ok(pw: str, user_id: str = OWNER_ID) -> bool:
+def _owner_password_ok(pw: str) -> bool:
     with SessionLocal() as s:
-        u = s.get(User, user_id)
+        u = s.get(User, OWNER_ID)
         stored = u.password_hash if u else None
     if stored:
         return verify_hash(pw, stored)
@@ -115,28 +134,52 @@ def _password_ok(pw: str, user_id: str = OWNER_ID) -> bool:
     return hmac.compare_digest(pw.encode(), config.settings.password.encode())
 
 
-def check_password(pw: str, client: str) -> str:
-    """Возвращает user_id или бросает 401/429."""
+def norm_login(login: str) -> str:
+    return re.sub(r"\s+", "", (login or "").strip().lower())
+
+
+def _find_guest(login: str) -> User | None:
+    with SessionLocal() as s:
+        return s.scalars(sa.select(User).where(User.login == norm_login(login), User.role == "guest")).first()
+
+
+def check_password(pw: str, client: str, login: str = "") -> str:
+    """Возвращает user_id или бросает 401/403/429."""
     since = now() - timedelta(seconds=FAIL_WINDOW)
     with SessionLocal() as s:
         fails = s.scalar(sa.select(sa.func.count()).select_from(LoginFailure)
                          .where(LoginFailure.client == client, LoginFailure.at >= since)) or 0
     if fails >= MAX_FAILS:
         raise HTTPException(429, "Слишком много ошибок. Подожди 5 минут и попробуй снова.")
-    if _password_ok(pw):
+    user_id = None
+    if not norm_login(login) or norm_login(login) == "owner":
+        ensure_owner()
+        if _owner_password_ok(pw):
+            user_id = OWNER_ID
+    else:
+        g = _find_guest(login)
+        if g and g.password_hash and verify_hash(pw, g.password_hash):
+            if not g.active:
+                raise HTTPException(403, "Этот аккаунт выключен. Напиши владельцу приложения.")
+            user_id = g.id
+    if user_id:
         with SessionLocal() as s:
             s.execute(sa.delete(LoginFailure).where(LoginFailure.client == client))
             s.commit()
-        return OWNER_ID
+        return user_id
     with SessionLocal() as s:
         s.add(LoginFailure(client=client))
         s.commit()
     left = MAX_FAILS - fails - 1
-    raise HTTPException(401, "Неверный пароль" + (f". Осталось попыток: {left}" if left > 0 else ". Теперь пауза 5 минут."))
+    what = "Неверный логин или пароль" if norm_login(login) else "Неверный пароль"
+    raise HTTPException(401, what + (f". Осталось попыток: {left}" if left > 0 else ". Теперь пауза 5 минут."))
 
 
 def change_password(old: str, new: str, user_id: str = OWNER_ID) -> None:
-    if not _password_ok(old, user_id):
+    with SessionLocal() as s:
+        u = s.get(User, user_id)
+        ok = _owner_password_ok(old) if user_id == OWNER_ID else bool(u and u.password_hash and verify_hash(old, u.password_hash))
+    if not ok:
         raise HTTPException(400, "Старый пароль не подошёл")
     if len(new) < 6:
         raise HTTPException(400, "Новый пароль слишком короткий (нужно хотя бы 6 символов)")
@@ -158,3 +201,63 @@ def current_user(request: Request) -> str:
     if not user_id:
         raise HTTPException(401, "Нужно войти")
     return user_id
+
+
+def is_owner(user_id: str) -> bool:
+    return user_id == OWNER_ID
+
+
+def require_owner(user_id: str) -> None:
+    if not is_owner(user_id):
+        raise HTTPException(403, "Это может только владелец приложения")
+
+
+# --- Тестеры (управляет владелец) ------------------------------------------------------
+
+def gen_password() -> str:
+    """Пароль для тестера: 10 букв и цифр без похожих (0/O, 1/l)."""
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(alphabet[b % len(alphabet)] for b in os.urandom(10))
+
+
+def create_guest(name: str, login: str, password: str, limit: float | None) -> User:
+    login = norm_login(login)
+    if not re.fullmatch(r"[a-z0-9_.\-]{3,32}", login) or login == "owner":
+        raise HTTPException(400, "Логин: 3–32 латинские буквы, цифры, точка, дефис или _")
+    if len(password) < 6:
+        raise HTTPException(400, "Пароль слишком короткий (нужно хотя бы 6 символов)")
+    if _find_guest(login):
+        raise HTTPException(400, "Такой логин уже есть")
+    u = User(id=new_id(), login=login, name=(name or login).strip()[:60], role="guest", active=True,
+             password_hash=hash_password(password), session_version=1,
+             ai_limit_rub=GUEST_LIMIT_RUB if limit is None else max(0.0, float(limit)))
+    with SessionLocal() as s:
+        s.add(u)
+        s.commit()
+    return u
+
+
+def list_guests() -> list[User]:
+    with SessionLocal() as s:
+        return list(s.scalars(sa.select(User).where(User.role == "guest").order_by(User.created_at)).all())
+
+
+def update_guest(user_id: str, *, name=None, active=None, limit=None, password=None) -> User:
+    with SessionLocal() as s:
+        u = s.get(User, user_id)
+        if u is None or u.role != "guest":
+            raise HTTPException(404, "Нет такого тестера")
+        if name is not None:
+            u.name = str(name).strip()[:60] or u.login
+        if active is not None:
+            u.active = bool(active)
+        if limit is not None:
+            u.ai_limit_rub = max(0.0, float(limit))
+        if password is not None:
+            if len(password) < 6:
+                raise HTTPException(400, "Пароль слишком короткий")
+            u.password_hash = hash_password(password)
+            u.session_version = (u.session_version or 1) + 1
+        s.commit()
+    forget_cache()
+    return u

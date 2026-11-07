@@ -26,9 +26,10 @@ schema_migrations = sa.Table(
 
 
 def _ddl(engine, sql: str) -> None:
-    # В YDB изменения схемы нельзя делать внутри транзакции — нужен режим AUTOCOMMIT.
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as c:
-        c.execute(sa.text(sql))
+    # sa.DDL помечает запрос как «изменение схемы»: YDB выполняет такие запросы вне транзакции
+    # (обычный text() в YDB падает с ошибкой «Scheme operations cannot be executed inside transaction»).
+    with engine.begin() as c:
+        c.execute(sa.DDL(sql))
 
 
 def add_column(engine, table: str, column: str, ydb_type: str, sql_type: str) -> None:
@@ -45,8 +46,18 @@ def m001_init(engine):
     db.Base.metadata.create_all(engine, checkfirst=True)
 
 
+def m002_users(engine):
+    """Аккаунты для тестеров: логин, имя, роль, включён ли, лимит на ИИ."""
+    add_column(engine, "users", "login", "Utf8", "VARCHAR")
+    add_column(engine, "users", "name", "Utf8", "TEXT")
+    add_column(engine, "users", "role", "Utf8", "VARCHAR")
+    add_column(engine, "users", "active", "Bool", "BOOLEAN")
+    add_column(engine, "users", "ai_limit_rub", "Double", "FLOAT")
+
+
 MIGRATIONS = [
     ("001_init", m001_init),
+    ("002_users", m002_users),
 ]
 
 

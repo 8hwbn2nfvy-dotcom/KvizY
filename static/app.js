@@ -164,7 +164,8 @@ function showLogin() {
   setTitle("Вход");
   view.innerHTML = `<div class="home-hero"><div class="logo">KvizY</div><p class="muted">Введи пароль один раз — дальше этот телефон или планшет будет входить сам.</p></div>
     <form id="login" class="stack" autocomplete="on">
-      <input type="text" name="username" value="owner" autocomplete="username" hidden>
+      <label class="field"><span>Логин</span><input type="text" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="владелец — оставь пустым">
+        <small>Логин тебе выдаёт владелец приложения. Если приложение твоё — оставь пустым.</small></label>
       <label class="field"><span>Пароль</span><input type="password" name="password" autocomplete="current-password" required></label>
       <button class="btn block" type="submit">Войти</button><div id="login-err"></div></form>`;
   const f = $("#login");
@@ -172,7 +173,7 @@ function showLogin() {
     e.preventDefault();
     const btn = $("button", f); btn.disabled = true;
     try {
-      await api("/api/login", { method: "POST", json: { password: f.password.value }, noAuthRedirect: true });
+      await api("/api/login", { method: "POST", json: { login: f.username.value, password: f.password.value }, noAuthRedirect: true });
       boot();
     } catch (err) { errorBox("#login-err", err, null, "Не вошли"); btn.disabled = false; }
   };
@@ -724,7 +725,8 @@ async function pageSubject(id) {
 async function pageSettings() {
   setTitle("Настройки");
   loading();
-  const [st, usage] = await Promise.all([api("/api/settings"), api("/api/usage")]);
+  if (S.boot.me && S.boot.me.role === "guest") return pageSettingsGuest();
+  const [st, usage, guests] = await Promise.all([api("/api/settings"), api("/api/usage"), api("/api/users")]);
   const ai = st.ai;
   const fieldNames = { folder_id: "ID каталога Yandex Cloud", model: "Модель", base_url: "Адрес API (base URL)", scope: "Scope" };
   const secretNames = { api_key: "API-ключ", auth_key: "Ключ авторизации" };
@@ -744,7 +746,11 @@ async function pageSettings() {
     <label class="field"><span>Новый пароль</span><input type="password" name="new1" autocomplete="new-password" minlength="6" required></label>
     <label class="field"><span>Ещё раз новый</span><input type="password" name="new2" autocomplete="new-password" minlength="6" required></label>
     <button class="btn block" type="submit">Сменить пароль</button><div id="pw-msg"></div></form>
-  <h2>Расходы за месяц</h2><div class="panel" id="usage"></div>`;
+  <h2>Тестеры</h2><div class="panel" id="guests"></div>
+  <h2>Расходы за месяц</h2><div class="panel" id="usage"></div>
+  <div class="actions" style="margin-top:24px"><button class="btn secondary" id="logout">Выйти на этом устройстве</button></div>`;
+  bindLogout();
+  renderGuests(guests);
 
   const renderFields = () => {
     const name = $("#ai-prov").value;
@@ -832,10 +838,113 @@ async function pageSettings() {
     <div class="bar" style="margin:8px 0 4px"><i style="width:${share}%"></i></div><p class="muted small">Только показ — ничего не блокируется.</p>
     <label class="field"><span>Бюджет в месяц, ₽</span><div class="row"><input type="number" id="budget" min="0" step="10" value="${usage.budget}" style="flex:1"><button class="btn small secondary" id="budget-save">Сохранить</button></div></label>
     <h3>По типам запросов</h3>${usage.by_purpose.length ? `<div class="kv">${usage.by_purpose.map((p) => `<span>${esc(PURPOSE[p.purpose] || p.name)} <small class="muted">(${p.calls})</small></span><span class="v">${p.rub.toFixed(2)} ₽</span>`).join("")}</div>` : '<p class="muted">Пока ничего.</p>'}
+    <h3>По людям</h3>${(usage.by_user || []).length ? `<div class="kv">${usage.by_user.map((u) => `<span>${esc(u.name)}${u.limit !== null && u.limit !== undefined ? ` <small class="muted">(лимит ${u.limit} ₽)</small>` : ""}</span><span class="v">${u.rub.toFixed(2)} ₽</span>`).join("")}</div>` : '<p class="muted">Пока ничего.</p>'}
     <h3>По квизам</h3>${usage.by_quiz.length ? `<div class="kv">${usage.by_quiz.map((q) => `<span>${esc(q.title)}</span><span class="v">${q.rub.toFixed(2)} ₽</span>`).join("")}</div>` : '<p class="muted">Пока ничего.</p>'}`;
   $("#budget-save").onclick = async () => {
     try { await api("/api/settings/budget", { method: "PUT", json: { budget: parseFloat($("#budget").value) || 0 } }); toast("Бюджет сохранён"); }
     catch (e) { toast(e.message); }
+  };
+}
+
+function bindLogout() {
+  $("#logout").onclick = async () => {
+    if (!(await confirmModal("Выйти? Чтобы войти снова, понадобятся логин и пароль.", "Выйти"))) return;
+    try { await api("/api/logout", { method: "POST" }); } catch (e) { /* всё равно выходим */ }
+    showLogin();
+  };
+}
+
+/** Настройки тестера: только палитра, пароль и свой расход на ИИ. */
+async function pageSettingsGuest() {
+  const st = await api("/api/settings");
+  const u = st.my_usage || {};
+  const share = u.limit ? Math.min(100, (u.spent / u.limit) * 100) : 0;
+  view.innerHTML = `<h1>Настройки</h1>
+    <p class="muted">Ты вошёл как <b>${esc(S.boot.me.name || S.boot.me.login)}</b>.</p>
+    <h2>ИИ в этом месяце</h2><div class="panel"><b>${(u.spent || 0).toFixed(2)} ₽ из ${u.limit ?? "∞"} ₽</b>
+      <div class="bar" style="margin:8px 0 4px"><i style="width:${share}%"></i></div>
+      <p class="muted small">Когда лимит кончится, новые квизы и замена вопросов не будут работать до 1-го числа. Пройти уже созданные квизы можно всегда.</p></div>
+    <h2>Палитра</h2><div class="palettes" id="pals">${st.palettes.map((p) => `<button type="button" class="pal ${p === st.palette ? "on" : ""}" data-p="${p}" data-palette="${p}" style="background:var(--bg);color:var(--text)">${esc(PALETTE_NAMES[p] || p)}
+      <span class="sw"><i style="background:var(--accent)"></i><i style="background:var(--accent-2)"></i><i style="background:var(--ok)"></i><i style="background:var(--bad)"></i></span></button>`).join("")}</div>
+    <h2>Пароль</h2><form class="panel" id="pw" autocomplete="off">
+      <label class="field"><span>Старый пароль</span><input type="password" name="old" autocomplete="current-password" required></label>
+      <label class="field"><span>Новый пароль</span><input type="password" name="new1" autocomplete="new-password" minlength="6" required></label>
+      <label class="field"><span>Ещё раз новый</span><input type="password" name="new2" autocomplete="new-password" minlength="6" required></label>
+      <button class="btn block" type="submit">Сменить пароль</button><div id="pw-msg"></div></form>
+    <div class="actions" style="margin-top:24px"><button class="btn secondary" id="logout">Выйти</button></div>`;
+  bindLogout();
+  $("#pals").onclick = async (e) => {
+    const b = e.target.closest(".pal"); if (!b) return;
+    applyPalette(b.dataset.p); $$(".pal").forEach((x) => x.classList.toggle("on", x === b));
+    try { await api("/api/settings/palette", { method: "PUT", json: { palette: b.dataset.p } }); S.boot.palette = b.dataset.p; }
+    catch (err) { toast(`Палитра не сохранилась: ${err.message}`); }
+  };
+  $("#pw").onsubmit = async (e) => {
+    e.preventDefault(); const f = e.target;
+    if (f.new1.value !== f.new2.value) { errorBox("#pw-msg", "Новые пароли не совпадают", null); return; }
+    try { await api("/api/settings/password", { method: "POST", json: { old: f.old.value, new: f.new1.value } }); f.reset(); $("#pw-msg").innerHTML = `<p class="ok-text">Пароль сменён ✓</p>`; }
+    catch (err) { errorBox("#pw-msg", err, null, "Пароль не сменён"); }
+  };
+}
+
+/** Владелец: список тестеров, создание, лимит, выключение, новый пароль, удаление. */
+function renderGuests(list) {
+  const box = $("#guests");
+  const showCreds = (login, password) => {
+    const text = `Адрес: ${location.origin}\nЛогин: ${login}\nПароль: ${password}`;
+    return `<div class="warn-box">Передай тестеру:<br>адрес: <b>${esc(location.origin)}</b><br>логин: <b class="mono">${esc(login)}</b><br>пароль: <b class="mono">${esc(password)}</b><br>
+      <small>Пароль показывается один раз — скопируй сейчас.</small>
+      <div class="actions"><button type="button" class="btn small secondary" data-copy="${esc(text)}">Скопировать</button></div></div>`;
+  };
+  box.innerHTML = `<p class="muted small">У каждого тестера свои квизы и статистика, твои данные ему не видны. ИИ у всех твой — расход виден ниже, в «По людям». Лимит в месяц — на каждого.</p>
+    <div id="g-new-creds"></div>
+    ${list.length ? `<ul class="list" style="margin:12px 0">${list.map((g) => `<li class="item" data-id="${g.id}">
+      <div class="t">${esc(g.name)} <small class="muted mono">${esc(g.login)}</small> ${g.active ? "" : '<span class="status-chip error">выключен</span>'}</div>
+      <div class="s"><span>ИИ: ${g.spent.toFixed(2)} из ${g.limit} ₽</span></div>
+      <div class="row" style="margin-top:10px">
+        <input type="number" min="0" step="10" value="${g.limit}" data-limit style="flex:1;min-width:90px" aria-label="Лимит, ₽">
+        <button type="button" class="btn small secondary" data-act="limit">Лимит</button>
+        <button type="button" class="btn small secondary" data-act="pass">Новый пароль</button>
+        <button type="button" class="btn small secondary" data-act="toggle">${g.active ? "Выключить" : "Включить"}</button>
+        <button type="button" class="btn small danger" data-act="del">Удалить</button></div>
+      <div data-creds></div></li>`).join("")}</ul>` : '<p class="muted">Тестеров пока нет.</p>'}
+    <form id="g-form" class="stack" autocomplete="off" style="margin-top:8px"><b>Новый тестер</b>
+      <div class="row"><input type="text" name="name" placeholder="Имя (например, Маша)" style="flex:1;min-width:140px">
+        <input type="text" name="login" placeholder="логин латиницей" autocapitalize="off" spellcheck="false" required style="flex:1;min-width:140px"></div>
+      <div class="row"><input type="number" name="limit" min="0" step="10" value="50" style="flex:1" aria-label="Лимит в месяц, ₽"><span class="muted small">₽ в месяц на ИИ</span></div>
+      <button class="btn block" type="submit">Создать аккаунт</button><div id="g-err"></div></form>`;
+  box.onclick = async (e) => {
+    const cp = e.target.closest("[data-copy]");
+    if (cp) {
+      try { await navigator.clipboard.writeText(cp.dataset.copy); toast("Скопировано"); }
+      catch (err) { toast("Не скопировалось — выдели текст и скопируй вручную"); }
+      return;
+    }
+    const b = e.target.closest("button[data-act]"); if (!b) return;
+    const li = b.closest("li"); const id = li.dataset.id; const g = list.find((x) => x.id === id);
+    try {
+      if (b.dataset.act === "del") {
+        if (!(await confirmModal(`Удалить тестера «${g.name}» и все его квизы и статистику? Вернуть нельзя.`, "Удалить", true))) return;
+        await api(`/api/users/${id}`, { method: "DELETE" }); toast("Удалён");
+      } else if (b.dataset.act === "pass") {
+        if (!(await confirmModal(`Сделать «${g.name}» новый пароль? Старый перестанет работать.`, "Сделать"))) return;
+        const r = await api(`/api/users/${id}`, { method: "PATCH", json: { new_password: true } });
+        $("[data-creds]", li).innerHTML = showCreds(r.login, r.password); return;
+      } else if (b.dataset.act === "toggle") {
+        await api(`/api/users/${id}`, { method: "PATCH", json: { active: !g.active } });
+      } else if (b.dataset.act === "limit") {
+        await api(`/api/users/${id}`, { method: "PATCH", json: { limit: parseFloat($("[data-limit]", li).value) || 0 } }); toast("Лимит сохранён");
+      }
+      renderGuests(await api("/api/users"));
+    } catch (err) { toast(err.message, 6000); }
+  };
+  $("#g-form").onsubmit = async (e) => {
+    e.preventDefault(); const f = e.target;
+    try {
+      const r = await api("/api/users", { method: "POST", json: { name: f.name.value, login: f.login.value, limit: parseFloat(f.limit.value) } });
+      renderGuests(await api("/api/users"));
+      $("#g-new-creds").innerHTML = showCreds(r.login, r.password);
+    } catch (err) { errorBox("#g-err", err, null, "Не создан"); }
   };
 }
 

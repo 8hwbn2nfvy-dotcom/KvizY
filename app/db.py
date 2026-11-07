@@ -58,11 +58,17 @@ Txt = sa.Text
 
 
 class User(Base):
+    """Владелец (id = "owner") и тестеры, которых владелец создаёт в Настройках."""
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(Str, primary_key=True)
-    password_hash: Mapped[str | None] = mapped_column(Txt)  # пусто = пароль из KVIZY_PASSWORD
+    password_hash: Mapped[str | None] = mapped_column(Txt)  # у владельца пусто = пароль из KVIZY_PASSWORD
     session_version: Mapped[int | None] = mapped_column(sa.Integer, default=1)
     created_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime, default=now)
+    login: Mapped[str | None] = mapped_column(Str)            # для входа (у владельца — пусто)
+    name: Mapped[str | None] = mapped_column(Txt)             # как зовут
+    role: Mapped[str | None] = mapped_column(Str)             # owner | guest
+    active: Mapped[bool | None] = mapped_column(sa.Boolean)   # выключенный тестер не может войти
+    ai_limit_rub: Mapped[float | None] = mapped_column(sa.Double)  # лимит на ИИ в месяц (только тестеры)
 
 
 class Setting(Base):

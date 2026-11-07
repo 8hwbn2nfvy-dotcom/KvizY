@@ -135,10 +135,40 @@ def log_usage(p: AIProvider, purpose: str, tokens_in: int, tokens_out: int,
     return cost
 
 
+def month_spent(user_id: str) -> float:
+    """Сколько человек потратил на ИИ в этом месяце, ₽."""
+    import datetime as dt
+
+    import sqlalchemy as sa
+
+    from app.db import SessionLocal, Usage, now
+    n = now()
+    start = dt.datetime(n.year, n.month, 1)
+    with SessionLocal() as s:
+        v = s.scalar(sa.select(sa.func.sum(Usage.cost_rub)).where(Usage.user_id == user_id, Usage.created_at >= start))
+    return float(v or 0)
+
+
+def check_quota(user_id: str) -> None:
+    """У тестеров есть лимит на ИИ в месяц. Исчерпан — новые запросы к ИИ не идут (у владельца лимита нет)."""
+    from app.db import OWNER_ID, SessionLocal, User
+    if user_id == OWNER_ID:
+        return
+    with SessionLocal() as s:
+        u = s.get(User, user_id)
+    if u is None or u.ai_limit_rub is None:
+        return
+    spent = month_spent(user_id)
+    if spent >= u.ai_limit_rub:
+        raise AIError(f"Лимит на ИИ в этом месяце исчерпан ({spent:.0f} из {u.ai_limit_rub:.0f} ₽). "
+                      f"Попроси владельца приложения поднять лимит. С 1-го числа лимит обновится.", "quota")
+
+
 def ask_json(purpose: str, user: str, *, system_extra: str = "", expect: tuple[str, ...] = (),
              quiz_id: str | None = None, quiz_title: str | None = None, user_id: str = "owner",
              max_tokens: int = 4000, mock=None, provider: AIProvider | None = None):
     """Спросить ИИ и получить JSON. Каждый вызов (даже неудачный по формату) записывается в расходы."""
+    check_quota(user_id)
     p = provider or get_provider()
     system = SYSTEM_RULES + ("\n" + system_extra if system_extra else "")
     total_in = total_out = 0

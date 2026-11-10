@@ -43,7 +43,6 @@ async function api(path, opts = {}) {
   if (opts.json !== undefined) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.json); }
   if (opts.form) init.body = opts.form;
   // Если сервер долго молчит (просыпается после простоя) — показываем «подключаюсь…».
-  if (!S.ready) wakeTimer = setTimeout(() => { const t = $("#boot-text"); if (t) t.textContent = "подключаюсь… сервер просыпается"; }, 1500);
   let resp;
   try {
     resp = await fetch(path, init);
@@ -94,7 +93,37 @@ function confirmModal(text, okText = "Да", danger = false) {
   });
 }
 function setTitle(t) { $("#top-title").textContent = t || "KvizY"; document.title = t ? `${t} — KvizY` : "KvizY"; }
-function loading(text = "загружаю…") { view.innerHTML = `<div class="center"><div class="spinner"></div><div class="muted">${esc(text)}</div></div>`; }
+function loading(text = "загружаю…") { view.innerHTML = `<div class="center"><div class="loader small" aria-hidden="true"><i></i><i></i><i></i></div><div class="muted">${esc(text)}</div></div>`; }
+
+/** Пока сервер просыпается: меняющийся текст и секунды, чтобы было видно, что всё идёт. */
+const WAKE_TEXTS = [
+  [0, "открываю…"],
+  [1.5, "подключаюсь к серверу…"],
+  [4, "сервер просыпается после перерыва…"],
+  [9, "ещё чуть-чуть — первый запуск после долгого сна дольше обычного"],
+  [20, "что-то долго… проверь интернет. Я продолжаю пытаться"],
+];
+let bootTicker = null;
+function startBootTicker() {
+  stopBootTicker();
+  const t0 = Date.now();
+  let shown = "";
+  const tick = () => {
+    const sec = (Date.now() - t0) / 1000;
+    const text = WAKE_TEXTS.filter(([from]) => sec >= from).pop()[1];
+    const el = $("#boot-text");
+    if (el && text !== shown) {
+      shown = text;
+      el.style.opacity = 0;
+      setTimeout(() => { el.textContent = text; el.style.opacity = 1; }, 150);
+    }
+    const s = $("#boot-sec");
+    if (s) s.textContent = sec >= 3 ? `${Math.floor(sec)} с` : "";
+  };
+  tick();
+  bootTicker = setInterval(tick, 250);
+}
+function stopBootTicker() { clearInterval(bootTicker); bootTicker = null; }
 function applyPalette(p) {
   document.documentElement.setAttribute("data-palette", p);
   $('meta[name="theme-color"]').setAttribute("content", PALETTE_BG[p] || "#ffffff");
@@ -144,14 +173,17 @@ window.addEventListener("hashchange", route);
 async function boot() {
   const bootEl = $("#boot");
   bootEl.hidden = false;
+  startBootTicker();
   try {
     S.boot = await api("/api/bootstrap");
     applyPalette(S.boot.palette || "classic");
     S.ready = true;
+    stopBootTicker();
     bootEl.hidden = true;
     route();
   } catch (e) {
     if (e.kind === "auth") return;
+    stopBootTicker();
     bootEl.hidden = true;
     S.ready = false;
     setTitle("KvizY");
@@ -160,6 +192,7 @@ async function boot() {
 }
 function showLogin() {
   S.ready = false;
+  stopBootTicker();
   $("#boot").hidden = true;
   setTitle("Вход");
   view.innerHTML = `<div class="home-hero"><div class="logo">KvizY</div><p class="muted">Введи пароль один раз — дальше этот телефон или планшет будет входить сам.</p></div>
